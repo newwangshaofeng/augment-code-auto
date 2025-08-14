@@ -1,5 +1,8 @@
 name: Modify VS Code Extension
 
+permissions:
+  contents: write
+
 on:
   schedule:
     - cron: "0 8 * * *"
