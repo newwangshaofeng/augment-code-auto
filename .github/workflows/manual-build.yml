@@ -132,14 +132,39 @@ jobs:
           const match = content.match(handleAuthURIPattern);
           
           if (match) {
-            const newCase = 'case "/autoAuth":F.handleAutoAuth(G);break;';
+            // 从现有的 handleAuthURI 调用中提取对象名和参数名
+            const callPattern = /([a-zA-Z_$][a-zA-Z0-9_$]*)\s*\.\s*handleAuthURI\s*\(\s*([a-zA-Z_$][a-zA-Z0-9_$]*)\s*\)/;
+            const callMatch = match[1].match(callPattern);
+            
+            let objectName = 'this';
+            let paramName = 'e';
+            
+            if (callMatch) {
+              objectName = callMatch[1];
+              paramName = callMatch[2];
+              console.log(`✓ Extracted variables: ${objectName}.handleAuthURI(${paramName})`);
+            } else {
+              console.log('⚠ Could not extract variables from handleAuthURI call, using defaults');
+            }
+            
+            const newCase = `case "/autoAuth":${objectName}.handleAutoAuth(${paramName});break;`;
             content = content.replace(handleAuthURIPattern, match[1] + newCase);
             console.log('✓ Added new case to switch statement');
           } else {
             console.log('⚠ Could not find handleAuthURI case, trying alternative approach');
-            // 尝试在任何 break; 后添加
-            if (content.includes('handleAuthURI')) {
-              content = content.replace(/handleAuthURI[^}]*break;/, '$&case "/autoAuth":F.handleAutoAuth(G);break;');
+            // 尝试在任何 break; 后添加，同时提取变量
+            const altPattern = /([a-zA-Z_$][a-zA-Z0-9_$]*)\s*\.\s*handleAuthURI\s*\(\s*([a-zA-Z_$][a-zA-Z0-9_$]*)\s*\)[^}]*break;/;
+            const altMatch = content.match(altPattern);
+            
+            if (altMatch) {
+              const objectName = altMatch[1];
+              const paramName = altMatch[2];
+              const newCase = `case "/autoAuth":${objectName}.handleAutoAuth(${paramName});break;`;
+              content = content.replace(altPattern, `$&${newCase}`);
+              console.log(`✓ Added case using extracted variables: ${objectName}.handleAutoAuth(${paramName})`);
+            } else {
+              console.log('⚠ Could not find handleAuthURI pattern, using fallback');
+              content = content.replace(/handleAuthURI[^}]*break;/, '$&case "/autoAuth":this.handleAutoAuth(e);break;');
             }
           }
           
