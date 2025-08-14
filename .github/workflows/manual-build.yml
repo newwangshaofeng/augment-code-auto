@@ -1,0 +1,250 @@
+name: Modify VS Code Extension (Manual)
+
+on:
+  workflow_dispatch:
+
+jobs:
+  modify-extension:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+
+      - name: Install required tools
+        run: |
+          npm install -g @vscode/vsce
+          sudo apt-get update
+          sudo apt-get install -y jq unzip
+
+      - name: Download Latest VSIX
+        run: |
+          PUBLISHER="augment"
+          EXTENSION_NAME="vscode-augment"
+          VSIX_URL="https://marketplace.visualstudio.com/_apis/public/gallery/publishers/${PUBLISHER}/vsextensions/${EXTENSION_NAME}/latest/vspackage"
+          curl -L --compressed -o original.vsix "${VSIX_URL}"
+          echo "VSIX downloaded successfully."
+
+      - name: Unpack VSIX
+        run: |
+          unzip -q original.vsix -d unpacked_ext
+          echo "VSIX unpacked successfully."
+
+      - name: Get extension version
+        id: get_version
+        run: |
+          VERSION=$(jq -r .version unpacked_ext/extension/package.json)
+          echo "VERSION=${VERSION}" >> $GITHUB_ENV
+          echo "Discovered extension version: ${VERSION}"
+
+      - name: Find main entry file and variables
+        run: |
+          # 查找主入口文件
+          MAIN_FILE=""
+          
+          # 尝试从 package.json 获取主入口文件
+          if [ -f "unpacked_ext/extension/package.json" ]; then
+            MAIN_ENTRY=$(jq -r '.main // empty' unpacked_ext/extension/package.json)
+            if [ -n "$MAIN_ENTRY" ] && [ -f "unpacked_ext/extension/$MAIN_ENTRY" ]; then
+              MAIN_FILE="unpacked_ext/extension/$MAIN_ENTRY"
+            fi
+          fi
+          
+          # 如果没找到，搜索包含特定模式的 JS 文件
+          if [ -z "$MAIN_FILE" ]; then
+            for file in $(find unpacked_ext/extension -name "*.js" -type f); do
+              if grep -q "handleAuthURI\|augment\.sessions" "$file" 2>/dev/null; then
+                MAIN_FILE="$file"
+                break
+              fi
+            done
+          fi
+          
+          # 如果还是没找到，使用第一个 JS 文件
+          if [ -z "$MAIN_FILE" ]; then
+            MAIN_FILE=$(find unpacked_ext/extension -name "*.js" -type f | head -1)
+          fi
+          
+          if [ -z "$MAIN_FILE" ]; then
+            echo "Error: No suitable JavaScript file found"
+            exit 1
+          fi
+          
+          echo "Found main file: $MAIN_FILE"
+          
+          # 备份原文件
+          cp "$MAIN_FILE" "${MAIN_FILE}.backup"
+          
+          # 查找变量名
+          SESSIONS_VAR=$(grep -o '[a-zA-Z_$][a-zA-Z0-9_$]*\s*=\s*"augment\.sessions"' "$MAIN_FILE" | sed 's/\s*=.*$//' | head -1)
+          EMAIL_VAR=$(grep -o '[a-zA-Z_$][a-zA-Z0-9_$]*\s*=\s*\["email"\]' "$MAIN_FILE" | sed 's/\s*=.*$//' | head -1)
+          
+          if [ -z "$SESSIONS_VAR" ] || [ -z "$EMAIL_VAR" ]; then
+            echo "Warning: Could not find required variable patterns, using fallback search"
+            # 尝试更宽松的搜索
+            SESSIONS_VAR=$(grep -o '[a-zA-Z_$][a-zA-Z0-9_$]*' "$MAIN_FILE" | grep -B5 -A5 "augment.sessions" | head -1)
+            EMAIL_VAR=$(grep -o '[a-zA-Z_$][a-zA-Z0-9_$]*' "$MAIN_FILE" | grep -B5 -A5 "email" | head -1)
+          fi
+          
+          # 如果还是找不到，使用默认值
+          if [ -z "$SESSIONS_VAR" ]; then
+            SESSIONS_VAR="x"
+          fi
+          if [ -z "$EMAIL_VAR" ]; then
+            EMAIL_VAR="y"
+          fi
+          
+          echo "Found sessions variable: $SESSIONS_VAR"
+          echo "Found email variable: $EMAIL_VAR"
+          
+          # 保存到环境变量
+          echo "SESSIONS_VAR=$SESSIONS_VAR" >> $GITHUB_ENV
+          echo "EMAIL_VAR=$EMAIL_VAR" >> $GITHUB_ENV
+          echo "MAIN_FILE=$MAIN_FILE" >> $GITHUB_ENV
+
+      - name: Apply modifications
+        run: |
+          echo "Applying modifications to $MAIN_FILE"
+          
+          # 创建修改脚本
+          cat > modify_script.js << 'EOF'
+          const fs = require('fs');
+          const path = process.argv[2];
+          const sessionsVar = process.argv[3];
+          const emailVar = process.argv[4];
+          
+          let content = fs.readFileSync(path, 'utf8');
+          
+          // 1. 添加新的 case 到 switch 语句
+          // 查找包含 handleAuthURI 的 case 语句并在其后添加新 case
+          const handleAuthURIPattern = /(case[^:]*:[^}]*handleAuthURI[^}]*break;)/;
+          const match = content.match(handleAuthURIPattern);
+          
+          if (match) {
+            const newCase = 'case "/autoAuth":F.handleAutoAuth(G);break;';
+            content = content.replace(handleAuthURIPattern, match[1] + newCase);
+            console.log('✓ Added new case to switch statement');
+          } else {
+            console.log('⚠ Could not find handleAuthURI case, trying alternative approach');
+            // 尝试在任何 break; 后添加
+            if (content.includes('handleAuthURI')) {
+              content = content.replace(/handleAuthURI[^}]*break;/, '$&case "/autoAuth":F.handleAutoAuth(G);break;');
+            }
+          }
+          
+          // 2. 添加新的 handleAutoAuth 方法
+          const newMethod = `async handleAutoAuth(e) {
+              try {
+                  const params = new URLSearchParams(e.query);
+                  const accessToken = params.get('token');
+                  const tenantURL = params.get('url');
+                  await this._context.secrets.store(${sessionsVar},JSON.stringify({accessToken,tenantURL,scopes:${emailVar}})); 
+                  this._sessionChangeEmitter.fire({accessToken,tenantURL,scopes:${emailVar}}); 
+              } catch (e) {
+                  this._logger.warn("Failed to process auth request:", e), this._programmaticCancellation.fire(mt(e))
+              }
+          }`;
+          
+          // 查找 async handleAuthURI 方法的结束位置
+          const methodPattern = /(async\s+handleAuthURI[^{]*\{(?:[^{}]|\{[^{}]*\})*\})/;
+          const methodMatch = content.match(methodPattern);
+          
+          if (methodMatch) {
+            content = content.replace(methodPattern, methodMatch[1] + newMethod);
+            console.log('✓ Added new handleAutoAuth method');
+          } else {
+            console.log('⚠ Could not find handleAuthURI method, appending at end');
+            content += '\n' + newMethod;
+          }
+          
+          fs.writeFileSync(path, content);
+          console.log('Modifications completed');
+          EOF
+          
+          # 运行修改脚本
+          node modify_script.js "$MAIN_FILE" "$SESSIONS_VAR" "$EMAIL_VAR"
+
+      - name: Verify modifications
+        run: |
+          echo "Verifying modifications..."
+          
+          # 检查新的 case 是否添加成功
+          if grep -q 'case "/autoAuth"' "$MAIN_FILE"; then
+            echo "✓ New case added successfully"
+          else
+            echo "✗ Failed to add new case"
+            exit 1
+          fi
+          
+          # 检查新方法是否添加成功
+          if grep -q "handleAutoAuth" "$MAIN_FILE"; then
+            echo "✓ New method added successfully"
+          else
+            echo "✗ Failed to add new method"
+            exit 1
+          fi
+          
+          echo "All modifications verified successfully"
+
+      - name: Update package.json version
+        run: |
+          cd unpacked_ext/extension
+          # 增加版本号的补丁版本
+          CURRENT_VERSION=$(jq -r .version package.json)
+          NEW_VERSION=$(echo $CURRENT_VERSION | awk -F. '{$NF = $NF + 1; print}' OFS=.)
+          jq --arg version "$NEW_VERSION" '.version = $version' package.json > package.json.tmp
+          mv package.json.tmp package.json
+          echo "Updated version from $CURRENT_VERSION to $NEW_VERSION"
+          echo "NEW_VERSION=$NEW_VERSION" >> $GITHUB_ENV
+
+      - name: Repack VSIX
+        run: |
+          cd unpacked_ext
+          # 重新打包为 VSIX
+          zip -r ../modified.vsix . -x "*.git*"
+          cd ..
+          echo "VSIX repacked successfully as modified.vsix"
+
+      - name: Upload modified VSIX
+        uses: actions/upload-artifact@v4
+        with:
+          name: modified-extension-v${{ env.NEW_VERSION }}
+          path: modified.vsix
+          retention-days: 30
+
+      - name: Create release (if on main branch)
+        if: github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
+        id: create_release
+        uses: actions/create-release@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tag_name: v${{ env.NEW_VERSION }}-modified
+          release_name: Modified Extension v${{ env.NEW_VERSION }}
+          body: |
+            
+            修改内容：
+            - 添加自动登录回调
+            
+            基于原版本: ${{ env.VERSION }}
+            修改后版本: ${{ env.NEW_VERSION }}
+          draft: false
+          prerelease: false
+
+      - name: Upload release asset
+        if: github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          upload_url: ${{ steps.create_release.outputs.upload_url }}
+          asset_path: ./modified.vsix
+          asset_name: augment-vscode-modified-v${{ env.NEW_VERSION }}.vsix
+          asset_content_type: application/zip
