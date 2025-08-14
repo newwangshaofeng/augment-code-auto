@@ -1,4 +1,4 @@
-\## Augment-Code-Auto
+## Augment-Code-Auto
 
 * 自动上号
 * 无感换号
