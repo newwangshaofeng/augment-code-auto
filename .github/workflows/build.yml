@@ -36,6 +36,7 @@ jobs:
       - name: Unpack VSIX
         run: |
           unzip -q original.vsix -d unpacked_ext
+          chmod -R u+w unpacked_ext
           echo "VSIX unpacked successfully."
 
       - name: Get extension version
