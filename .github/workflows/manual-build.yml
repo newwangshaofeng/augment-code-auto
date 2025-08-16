@@ -48,7 +48,20 @@ jobs:
           echo "VERSION=${VERSION}" >> $GITHUB_ENV
           echo "Discovered extension version: ${VERSION}"
 
+      - name: Check if version already exists
+        id: check_version
+        run: |
+          TAG_NAME="augment-vscode-modified-v${VERSION}"
+          if git ls-remote --tags origin | grep -q "refs/tags/${TAG_NAME}$"; then
+            echo "Tag ${TAG_NAME} already exists, skipping build"
+            echo "skip_build=true" >> $GITHUB_OUTPUT
+          else
+            echo "Tag ${TAG_NAME} does not exist, proceeding with build"
+            echo "skip_build=false" >> $GITHUB_OUTPUT
+          fi
+
       - name: Find main entry file and variables
+        if: steps.check_version.outputs.skip_build == 'false'
         run: |
           # 查找主入口文件
           MAIN_FILE=""
@@ -114,6 +127,7 @@ jobs:
           echo "MAIN_FILE=$MAIN_FILE" >> $GITHUB_ENV
 
       - name: Apply modifications
+        if: steps.check_version.outputs.skip_build == 'false'
         run: |
           echo "Applying modifications to $MAIN_FILE"
           
@@ -201,6 +215,7 @@ jobs:
           node modify_script.js "$MAIN_FILE" "$SESSIONS_VAR" "$EMAIL_VAR"
 
       - name: Verify modifications
+        if: steps.check_version.outputs.skip_build == 'false'
         run: |
           echo "Verifying modifications..."
           
@@ -222,18 +237,10 @@ jobs:
           
           echo "All modifications verified successfully"
 
-      - name: Update package.json version
-        run: |
-          cd unpacked_ext/extension
-          # 增加版本号的补丁版本
-          CURRENT_VERSION=$(jq -r .version package.json)
-          NEW_VERSION=$(echo $CURRENT_VERSION | awk -F. '{$NF = $NF + 1; print}' OFS=.)
-          jq --arg version "$NEW_VERSION" '.version = $version' package.json > package.json.tmp
-          mv package.json.tmp package.json
-          echo "Updated version from $CURRENT_VERSION to $NEW_VERSION"
-          echo "NEW_VERSION=$NEW_VERSION" >> $GITHUB_ENV
+
 
       - name: Repack VSIX
+        if: steps.check_version.outputs.skip_build == 'false'
         run: |
           cd unpacked_ext
           # 重新打包为 VSIX
@@ -242,38 +249,25 @@ jobs:
           echo "VSIX repacked successfully as modified.vsix"
 
       - name: Upload modified VSIX
+        if: steps.check_version.outputs.skip_build == 'false'
         uses: actions/upload-artifact@v4
         with:
-          name: modified-extension-v${{ env.NEW_VERSION }}
+          name: augment-vscode-modified-v${{ env.VERSION }}
           path: modified.vsix
           retention-days: 30
 
-      - name: Create release (if on main branch)
-        if: github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
-        id: create_release
-        uses: actions/create-release@v1
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Create release
+        if: github.ref == 'refs/heads/main' && steps.check_version.outputs.skip_build == 'false'
+        uses: softprops/action-gh-release@v2
         with:
-          tag_name: v${{ env.NEW_VERSION }}-modified
-          release_name: Modified Extension v${{ env.NEW_VERSION }}
+          tag_name: augment-vscode-modified-v${{ env.VERSION }}
+          name: Augment VSCode Modified v${{ env.VERSION }}
           body: |
-            
             修改内容：
             - 添加自动登录回调
-            
+
             基于原版本: ${{ env.VERSION }}
-            修改后版本: ${{ env.NEW_VERSION }}
+          files: |
+            modified.vsix
           draft: false
           prerelease: false
-
-      - name: Upload release asset
-        if: github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
-        uses: actions/upload-release-asset@v1
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          upload_url: ${{ steps.create_release.outputs.upload_url }}
-          asset_path: ./modified.vsix
-          asset_name: augment-vscode-modified-v${{ env.NEW_VERSION }}.vsix
-          asset_content_type: application/zip
