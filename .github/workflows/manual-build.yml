@@ -244,16 +244,16 @@ jobs:
         run: |
           cd unpacked_ext
           # 重新打包为 VSIX
-          zip -r ../modified.vsix . -x "*.git*"
+          zip -r "../augment-vscode-modified-v${{ env.VERSION }}.vsix" . -x "*.git*"
           cd ..
-          echo "VSIX repacked successfully as modified.vsix"
+          echo "VSIX repacked successfully as augment-vscode-modified-v${{ env.VERSION }}.vsix"
 
       - name: Upload modified VSIX
         if: steps.check_version.outputs.skip_build == 'false'
         uses: actions/upload-artifact@v4
         with:
           name: augment-vscode-modified-v${{ env.VERSION }}
-          path: modified.vsix
+          path: augment-vscode-modified-v${{ env.VERSION }}.vsix
           retention-days: 30
 
       - name: Create release
@@ -268,6 +268,6 @@ jobs:
 
             基于原版本: ${{ env.VERSION }}
           files: |
-            modified.vsix
+            augment-vscode-modified-v${{ env.VERSION }}.vsix
           draft: false
           prerelease: false
