@@ -1,16 +1,10 @@
-name: Modify VS Code Extension (Manual)
+name: Build Augment VSCode v0.521.0 Modified
 
 permissions:
   contents: write
 
 on:
   workflow_dispatch:
-    inputs:
-      version:
-        description: 'Specific version to build (e.g., 0.521.0). Leave empty for latest version.'
-        required: false
-        type: string
-        default: ''
 
 jobs:
   modify-extension:
@@ -33,21 +27,15 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y jq unzip
 
-      - name: Download Specific Version VSIX
+      - name: Download v0.521.0 VSIX
         run: |
           PUBLISHER="augment"
           EXTENSION_NAME="vscode-augment"
-          # 支持指定版本或使用最新版本
-          if [ "${{ github.event.inputs.version }}" != "" ]; then
-            VERSION="${{ github.event.inputs.version }}"
-            VSIX_URL="https://marketplace.visualstudio.com/_apis/public/gallery/publishers/${PUBLISHER}/vsextensions/${EXTENSION_NAME}/${VERSION}/vspackage"
-            echo "Downloading specific version: ${VERSION}"
-          else
-            VSIX_URL="https://marketplace.visualstudio.com/_apis/public/gallery/publishers/${PUBLISHER}/vsextensions/${EXTENSION_NAME}/latest/vspackage"
-            echo "Downloading latest version"
-          fi
+          VERSION="0.521.0"
+          VSIX_URL="https://marketplace.visualstudio.com/_apis/public/gallery/publishers/${PUBLISHER}/vsextensions/${EXTENSION_NAME}/${VERSION}/vspackage"
+          echo "Downloading version: ${VERSION}"
           curl -L --compressed -o original.vsix "${VSIX_URL}"
-          echo "VSIX downloaded successfully."
+          echo "VSIX v${VERSION} downloaded successfully."
 
       - name: Unpack VSIX
         run: |
@@ -55,22 +43,20 @@ jobs:
           chmod -R u+w unpacked_ext
           echo "VSIX unpacked successfully."
 
-      - name: Get extension version
+      - name: Get and verify extension version
         id: get_version
         run: |
           VERSION=$(jq -r .version unpacked_ext/extension/package.json)
           echo "VERSION=${VERSION}" >> $GITHUB_ENV
           echo "Discovered extension version: ${VERSION}"
           
-          # 如果指定了版本，验证是否匹配
-          if [ "${{ github.event.inputs.version }}" != "" ]; then
-            EXPECTED_VERSION="${{ github.event.inputs.version }}"
-            if [ "${VERSION}" != "${EXPECTED_VERSION}" ]; then
-              echo "Warning: Downloaded version ${VERSION} does not match expected version ${EXPECTED_VERSION}"
-              echo "This might happen if the specified version doesn't exist in the marketplace"
-            else
-              echo "✓ Version matches expected: ${VERSION}"
-            fi
+          # 验证版本是否为0.521.0
+          if [ "${VERSION}" != "0.521.0" ]; then
+            echo "Error: Expected version 0.521.0 but got ${VERSION}"
+            echo "The downloaded package might not be the correct version"
+            exit 1
+          else
+            echo "✓ Version confirmed: ${VERSION}"
           fi
 
       - name: Check if version already exists
@@ -262,8 +248,6 @@ jobs:
           
           echo "All modifications verified successfully"
 
-
-
       - name: Repack VSIX
         if: steps.check_version.outputs.skip_build == 'false'
         run: |
@@ -290,6 +274,7 @@ jobs:
           body: |
             修改内容：
             - 添加自动登录回调
+            - 基于 v0.521.0 版本构建
 
             基于原版本: ${{ env.VERSION }}
           files: |
